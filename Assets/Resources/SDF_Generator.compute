@@ -1,0 +1,191 @@
+﻿#pragma kernel CSMain
+
+int SdfResolution;
+RWStructuredBuffer<float> Output;
+StructuredBuffer<int> MeshTrianglesBuffer; // mesh vertices ordered by triangle in local space
+StructuredBuffer<float3> MeshVerticesBuffer;
+StructuredBuffer<float3> MeshNormalsBuffer;
+float3 MinExtents;
+float3 MaxExtents;
+
+// Remaps value "v" from range [fromMin, fromMax] to range [toMin, toMax]
+float3 Remap(float3 v, float3 fromMin, float3 fromMax, float3 toMin, float3 toMax)
+{
+	return (v - fromMin) / (fromMax - fromMin) * (toMax - toMin) + toMin;
+}
+
+// Transforms the voxel ID coordinate to the mesh/local space position
+float3 CoordToPosition(uint3 coord)
+{
+	// add float3(0.5, 0.5, 0.5) in order to center the position to the middle of the voxel
+	return Remap((float3)coord + float3(0.5, 0.5, 0.5), 0, SdfResolution.xxx, MinExtents.xyz, MaxExtents.xyz);
+}
+
+// Transforms the 3D dimensional voxel ID coordiante into a one-dimensional index for accessing a ComputeBuffer
+inline int CoordsToBufferIndex(int x, int y, int z)
+{
+	return x + y * SdfResolution + z * SdfResolution * SdfResolution;
+}
+
+
+float3 ClosetPointToTriangle(int indexA, int indexB, int indexC, float3 P, out int2 feature)
+{
+	float3 A = MeshVerticesBuffer[indexA].xyz;
+	float3 B = MeshVerticesBuffer[indexB].xyz;
+	float3 C = MeshVerticesBuffer[indexC].xyz;
+
+	float snom = dot(P - A, B - A);
+	float sdenom = dot(P - B, A - B);
+
+	float tnom = dot(P - A, C - A);
+	float tdenom = dot(P - C, A - C);
+
+	if (snom <= 0.0 && tnom <= 0.0)
+	{
+		feature = int2(indexA, indexA);
+		return A;
+	}
+
+	float unom = dot(P - B, C - B);
+	float udenom = dot(P - C, B - C);
+
+	if (sdenom <= 0.0 && unom <= 0.0)
+	{
+		feature = int2(indexB, indexB);
+		return B;
+	}
+
+	if (tdenom <= 0.0 && udenom <= 0.0)
+	{
+		feature = int2(indexC, indexC);
+		return C;
+	}
+
+	// compute the normal
+	float3 n = cross(B - A, C - A);
+
+	// for AB check triple scalar product [N PA PB]
+	float coordsPAB = dot(n, cross(A - P, B - P));
+	if (coordsPAB <= 0 && snom >= 0.0 && sdenom >= 0.0)
+	{
+		feature = int2(indexA, indexB);
+		return A + snom / (snom + sdenom) * (B - A);
+	}
+
+	// for BC check triple scalar product [N PB PC]
+	float coordsPBC = dot(n, cross(B - P, C - P));
+	if (coordsPBC <= 0 && unom >= 0.0 && udenom >= 0.0)
+	{
+		feature = int2(indexB, indexC);
+		return B + unom / (unom + udenom) * (C - B);
+	}
+
+	// for CA check triple scalar product [N PC PA]
+	float coordsPCA = dot(n, cross(C - P, A - P));
+	if (coordsPCA <= 0 && tnom >= 0.0 && tdenom >= 0.0)
+	{
+		feature = int2(indexA, indexC);
+		return A + tnom / (tnom + tdenom) * (C - A);
+	}
+
+	// P is inside triangle
+	// normalize barycentric coordinates
+	float u = coordsPBC / (coordsPAB + coordsPBC + coordsPCA);
+	float v = coordsPCA / (coordsPAB + coordsPBC + coordsPCA);
+	float w = 1.0 - u - v;
+	feature = int2(-1, -1);
+	return u * A + v * B + w * C;
+}
+
+inline float3 GetTriangleNormal(int indexA, int indexB, int indexC)
+{
+	float3 A = MeshVerticesBuffer[indexA].xyz;
+	float3 B = MeshVerticesBuffer[indexB].xyz;
+	float3 C = MeshVerticesBuffer[indexC].xyz;
+	return normalize(cross(B - A, C - A));
+}
+
+[numthreads(8,8,8)]
+void CSMain(uint3 dispatchID : SV_DispatchThreadID)
+{
+	// get triangle count
+	uint meshTriangleCount, dummy;
+	MeshTrianglesBuffer.GetDimensions(meshTriangleCount, dummy);
+
+	// get the local space postition
+	float3 currentGridPoint = CoordToPosition(dispatchID.xyz);
+
+	int indexA, indexB, indexC;
+	float minimumDistance = 1000000.0;
+	int2 minimumFeature;
+	float3 minimumNormal;
+	float3 minimumDirection;
+
+	// iterate over all triangles
+	for (uint i = 0; i < meshTriangleCount; i += 3)
+	{
+		indexA = MeshTrianglesBuffer[i + 0];
+		indexB = MeshTrianglesBuffer[i + 1];
+		indexC = MeshTrianglesBuffer[i + 2];
+
+		int2 currentFeature;
+		float3 closestPoint = ClosetPointToTriangle(indexA, indexB, indexC, currentGridPoint, currentFeature);
+		float3 currentDirection = currentGridPoint - closestPoint;
+		float3 currentNormal = GetTriangleNormal(indexA, indexB, indexC);
+		float currentDistance = distance(currentGridPoint, closestPoint);
+
+		if (currentDistance < minimumDistance)
+		{
+			minimumDistance = currentDistance;
+			minimumFeature = currentFeature;
+			minimumDirection = currentDirection;
+			minimumNormal = currentNormal;
+		}
+	}
+
+
+	// ========= let's find the sign ============
+	float finalDistance;
+	if (minimumFeature.x == -1 && minimumFeature.y == -1)
+	{
+		finalDistance = minimumDistance * sign(dot(minimumDirection, minimumNormal));
+	}
+	else
+	{
+		float3 normal;
+		float3 averageNormal = float3(0, 0, 0);
+		float3 feature1 = MeshVerticesBuffer[minimumFeature.x];
+		float3 feature2 = MeshVerticesBuffer[minimumFeature.y];
+
+		for (uint j = 0; j < meshTriangleCount; j += 3)
+		{
+			int b = 0;
+			for (uint k = j; k < j + 3; k++)
+			{
+				float3 inspectedPos = MeshVerticesBuffer[MeshTrianglesBuffer[k]];
+				if (distance(inspectedPos, feature1) < 0.001)
+				{
+					b++;
+				}
+				if (distance(inspectedPos, feature2) < 0.001)
+				{
+					b++;
+				}
+			}
+
+			// if the closest point is shared by 2 or more triangles we need to compute the average normal
+			if (b >= 2)
+			{
+				normal = MeshNormalsBuffer[MeshTrianglesBuffer[j + 0]] + MeshNormalsBuffer[MeshTrianglesBuffer[j + 1]] + MeshNormalsBuffer[MeshTrianglesBuffer[j + 2]];
+				averageNormal += normal;
+			}
+		}
+
+		finalDistance = minimumDistance * sign(dot(minimumDirection, averageNormal));
+	}
+
+	Output[CoordsToBufferIndex(dispatchID.x, dispatchID.y, dispatchID.z)] = finalDistance;
+}
+
+
+

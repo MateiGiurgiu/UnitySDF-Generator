@@ -1,132 +1,149 @@
-
-
-using System;
-using System.Collections;
-using System.Collections.Generic;
-using System.IO;
-using UnityEditor;
+﻿using System.Runtime.InteropServices;
+using System.Text;
 using UnityEngine;
 
-public enum PowerOf8Size
+public static class SdfGenerator
 {
-    _8 = 8,
-    _16 = 16,
-    _32 = 32,
-    _64 = 64,
-    _96 = 96,
-    _128 = 128,
-    _160 = 160,
-    _200 = 200,
-    _256 = 256
-};
-
-public class SdfGenerator : EditorWindow
-{
-    private string m_savePath
+    private static ComputeBuffer GetOutputBuffer(int sdfResolution)
     {
-        get => EditorPrefs.GetString("SdfGenerator_SavePath", string.Empty);
-        set => EditorPrefs.SetString("SdfGenerator_SavePath", value);
-    }
-    private int m_sdfResolution = 32;
-    private Mesh m_mesh;
-
-
-    [MenuItem("Utilities/SDF Generator")]
-    static void Init()
-    {
-        SdfGenerator window = (SdfGenerator)EditorWindow.GetWindow(typeof(SdfGenerator));
-        window.Show();
-        //SceneView.duringSceneGui += window.OnSceneGUI;
+        int cubicSdfResolution = sdfResolution * sdfResolution * sdfResolution;
+        ComputeBuffer outputBuffer = new ComputeBuffer(cubicSdfResolution, Marshal.SizeOf(typeof(float)));
+        return outputBuffer;
     }
 
-    private void OnGUI()
+    private static ComputeBuffer GetMeshNormalsBuffer(Mesh mesh)
     {
-        GUILayout.BeginVertical();
-
-        // title
-        EditorGUILayout.Space();
-        GUILayout.Label("--- SDF Generator ---", new GUIStyle(EditorStyles.centeredGreyMiniLabel)
-        {
-            fontSize = 12,
-            alignment = TextAnchor.MiddleCenter
-        });
-        EditorGUILayout.Space();
-
-        // save location for the SDF
-        GUILayout.BeginHorizontal();
-        {
-            GUI.enabled = false;
-            EditorGUILayout.TextField("Save Location", m_savePath, GUILayout.MaxWidth(600));
-            GUI.enabled = true;
-
-            if (GUILayout.Button(EditorGUIUtility.IconContent("d_Folder Icon"), GUILayout.MaxWidth(40), GUILayout.MaxHeight(EditorGUIUtility.singleLineHeight)))
-            {
-                m_savePath = EditorUtility.SaveFolderPanel("SDF Save Location", m_savePath, "").Substring(Application.dataPath.Length).Insert(0, "Assets");
-            }
-        }
-        GUILayout.EndHorizontal();
-
-        // resolution of the sdf
-        m_sdfResolution = Convert.ToInt32((PowerOf8Size)EditorGUILayout.EnumPopup("SDF Resolution", (PowerOf8Size)m_sdfResolution));
-
-        // the mesh to compute the SDF from
-        m_mesh = EditorGUILayout.ObjectField(new GUIContent("Mesh"), m_mesh, typeof(Mesh), false) as Mesh;
-
-        EditorGUILayout.Space();
-
-        // show the button as not interactable if there is no mesh assigned
-        GUI.enabled = (m_mesh != null);
-
-        // use horizontal layout and flexible space to center the button horizontally
-        EditorGUILayout.BeginHorizontal();
-        GUILayout.FlexibleSpace();
-        if(GUILayout.Button("Generate SDF", GUILayout.MaxWidth(150f)))
-        {
-            GenerateSDF();
-        }
-        GUI.enabled = true;
-        GUILayout.FlexibleSpace();
-        EditorGUILayout.EndHorizontal();
-
-        GUILayout.EndVertical();
+        ComputeBuffer outputBuffer = new ComputeBuffer(mesh.normals.Length, Marshal.SizeOf(typeof(Vector3)));
+        outputBuffer.SetData(mesh.normals);
+        return outputBuffer;
     }
 
-    private float ComputeSize(Bounds meshBounds)
+    private static ComputeBuffer GetMeshVerticesBuffer(Mesh mesh)
     {
-        float size = 0f;
-
-        // pick the largest value of all sides
-        size = Mathf.Max(meshBounds.size.x, meshBounds.size.y, meshBounds.size.z);
-
-        return size;
+        ComputeBuffer outputBuffer = new ComputeBuffer(mesh.vertices.Length, Marshal.SizeOf(typeof(Vector3)));
+        outputBuffer.SetData(mesh.vertices);
+        return outputBuffer;
     }
 
-
-    private void GenerateSDF()
+    private static ComputeBuffer GetMeshTrianglesBuffer(Mesh mesh)
     {
-        //RenderTexture rt = new RenderTexture(SdfSize, SdfSize, 0, RenderTextureFormat.RFloat, RenderTextureReadWrite.Linear);
-        //rt.volumeDepth = SdfSize;
-        //rt.enableRandomWrite = true;
-        //rt.dimension = UnityEngine.Rendering.TextureDimension.Tex3D;
-        //rt.wrapMode = TextureWrapMode.Clamp;
-        //rt.Create();
+        ComputeBuffer outputBuffer = new ComputeBuffer(mesh.triangles.Length, Marshal.SizeOf(typeof(int)));
+        outputBuffer.SetData(mesh.triangles);
+        return outputBuffer;
+    }
 
-        Texture3D tex3D = new Texture3D(m_sdfResolution, m_sdfResolution, m_sdfResolution, TextureFormat.RGBAHalf, false);
+    private static Vector3 ComputeMinExtents(Bounds meshBounds)
+    {
+        float largestSize = Mathf.Max(meshBounds.extents.x, meshBounds.extents.y, meshBounds.extents.z);
+        float padding = MaxComponent(meshBounds.extents) * 0.15f;
+        largestSize += padding;
+        return (meshBounds.center - new Vector3(largestSize, largestSize, largestSize));
+    }
+
+    private static Vector3 ComputeMaxExtents(Bounds meshBounds)
+    {
+        float largestSize = Mathf.Max(meshBounds.extents.x, meshBounds.extents.y, meshBounds.extents.z);
+        float padding = MaxComponent(meshBounds.extents) * 0.15f;
+        largestSize += padding;
+        return (meshBounds.center + new Vector3(largestSize, largestSize, largestSize));
+    }
+
+    private static float MaxComponent(Vector3 vector)
+    {
+        return Mathf.Max(vector.x, vector.y, vector.z);
+    }
+
+    private static Texture3D Texture3dFromData(float[] outputData, int sdfResolution)
+    {
+        Texture3D tex3D = new Texture3D(sdfResolution, sdfResolution, sdfResolution, TextureFormat.RFloat, false);
         tex3D.anisoLevel = 1;
         tex3D.filterMode = FilterMode.Bilinear;
         tex3D.wrapMode = TextureWrapMode.Clamp;
 
-        Save3DTexture(tex3D);
+        Color[] colors = tex3D.GetPixels();
+        for (int y = 0; y < sdfResolution; y++)
+        {
+            for (int z = 0; z < sdfResolution; z++)
+            {
+                for (int x = 0; x < sdfResolution; x++)
+                {
+                    int index = x + y * sdfResolution + z * sdfResolution * sdfResolution;
+                    float c = outputData[index];
+                    colors[index] = new Color(c, 0, 0, 0);
+                }
+            }
+        }
+
+        tex3D.SetPixels(colors);
+        tex3D.Apply(false, false);
+        return tex3D;
     }
 
-    private void Save3DTexture(Texture3D texture)
+    public static Texture3D GenerateSdf(Mesh mesh, int sdfResolution)
     {
-        //string path = Path.Combine(m_savePath, m_mesh.name + "_SDF.asset");
-        string path = m_savePath + "/" + m_mesh.name + "_SDF.asset";
-        AssetDatabase.CreateAsset(texture, path);
-        AssetDatabase.SaveAssets();
-        AssetDatabase.Refresh();
+        // let's start with some safety checks
+        if (mesh == null)
+        {
+            Debug.LogError("The mesh provided to the SDF Generator must not be null.");
+        }
+        if (sdfResolution % 8 != 0) // check if the sdf resolution is a power of 8
+        {
+            Debug.LogError("Sdf resolution must be a power of 8.");
+        }
+
+        // create a timer
+        System.Diagnostics.Stopwatch stopwatch = new System.Diagnostics.Stopwatch();
+        double computeTime;
+        double copyTime;
+
+        // create the resources we need to upload and retrive data from the GPU
+        ComputeBuffer outputBuffer = GetOutputBuffer(sdfResolution);
+        ComputeBuffer meshTrianglesBuffer = GetMeshTrianglesBuffer(mesh);
+        ComputeBuffer meshVerticesBuffer = GetMeshVerticesBuffer(mesh);
+        ComputeBuffer meshNormalsBuffer = GetMeshNormalsBuffer(mesh);
+
+        // Instantiate the compute shader from the resources folder
+        ComputeShader computeShader = (ComputeShader)Resources.Load<ComputeShader>("SDF_Generator");
+        int kernel = computeShader.FindKernel("CSMain");
+
+        // bind the resources to the compute shader
+        computeShader.SetInt("SdfResolution", sdfResolution);
+        computeShader.SetBuffer(kernel, "MeshTrianglesBuffer", meshTrianglesBuffer);
+        computeShader.SetBuffer(kernel, "MeshVerticesBuffer", meshVerticesBuffer);
+        computeShader.SetBuffer(kernel, "MeshNormalsBuffer", meshNormalsBuffer);
+        computeShader.SetBuffer(kernel, "Output", outputBuffer);
+        computeShader.SetVector("MinExtents", ComputeMinExtents(mesh.bounds));
+        computeShader.SetVector("MaxExtents", ComputeMaxExtents(mesh.bounds));
+
+        // dispatch
+        int threadGroupSize = sdfResolution / 8;
+        stopwatch.Start();
+        computeShader.Dispatch(kernel, threadGroupSize, threadGroupSize, threadGroupSize);
+        float[] outputData = new float[sdfResolution * sdfResolution * sdfResolution];
+        outputBuffer.GetData(outputData);
+        stopwatch.Stop();
+        computeTime = stopwatch.Elapsed.TotalSeconds;
+
+        stopwatch.Restart();
+        // convert output data ComputeBuffer to a 3D texture
+        Texture3D tex3d = Texture3dFromData(outputData, sdfResolution);
+        stopwatch.Stop();
+        copyTime = stopwatch.Elapsed.TotalSeconds;
+
+        // destroy the resources
+        outputBuffer.Release();
+        meshTrianglesBuffer.Release();
+        meshVerticesBuffer.Release();
+        meshNormalsBuffer.Release();
+
+        // print computational duration data
+        StringBuilder sb = new StringBuilder();
+        sb.AppendLine($"SDF Genearated in {(computeTime + copyTime).ToString("F4")} seconds");
+        sb.AppendLine("↓↓ Click for more details ↓↓");
+        sb.AppendLine($"=> Compute Time: {computeTime.ToString("F4")} seconds");
+        sb.AppendLine($"=> Copy Time: {copyTime.ToString("F4")} seconds");
+        Debug.Log(sb.ToString());
+
+        return tex3d;
     }
-
-
 }
