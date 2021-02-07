@@ -184,7 +184,8 @@ void CSMain(uint3 dispatchID : SV_DispatchThreadID)
 		finalDistance = minimumDistance * sign(dot(minimumDirection, averageNormal));
 	}
 
-	Output[CoordsToBufferIndex(dispatchID.x, dispatchID.y, dispatchID.z)] = finalDistance;
+	float sdfScale = (MaxExtents.x - MinExtents.x);
+	Output[CoordsToBufferIndex(dispatchID.x, dispatchID.y, dispatchID.z)] = finalDistance / sdfScale;
 }
 
 

@@ -34,18 +34,16 @@ public static class SdfGenerator
 
     private static Vector3 ComputeMinExtents(Bounds meshBounds)
     {
-        float largestSize = Mathf.Max(meshBounds.extents.x, meshBounds.extents.y, meshBounds.extents.z);
-        float padding = MaxComponent(meshBounds.extents) * 0.15f;
-        largestSize += padding;
-        return (meshBounds.center - new Vector3(largestSize, largestSize, largestSize));
+        float largestSide = MaxComponent(meshBounds.size);
+        float padding = largestSide / 20;
+        return meshBounds.center - (Vector3.one * (largestSide * 0.5f + padding));
     }
 
     private static Vector3 ComputeMaxExtents(Bounds meshBounds)
     {
-        float largestSize = Mathf.Max(meshBounds.extents.x, meshBounds.extents.y, meshBounds.extents.z);
-        float padding = MaxComponent(meshBounds.extents) * 0.15f;
-        largestSize += padding;
-        return (meshBounds.center + new Vector3(largestSize, largestSize, largestSize));
+        float largestSide = MaxComponent(meshBounds.size);
+        float padding = largestSide / 20;
+        return meshBounds.center + (Vector3.one * (largestSide * 0.5f + padding));
     }
 
     private static float MaxComponent(Vector3 vector)
