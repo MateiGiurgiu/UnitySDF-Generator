@@ -234,7 +234,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 648c4bfb13e6af040a33d92255301202, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  m_sdfVisualiserShader: {fileID: 4800000, guid: 06f342ca9411e0d41a1a5e6f425acc11,
+  m_sdfVisualiserShader: {fileID: 4800000, guid: 54e92d33a63682f47928d68e87300c50,
     type: 3}
   m_sdfTexture: {fileID: 11700000, guid: b72d7e2adbddea24b9adb35cb84cbb81, type: 2}
   m_sdfScale: 1
